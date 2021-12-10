@@ -1,0 +1,422 @@
+---
+title: "Tarea3"
+output:
+  html_document: default
+  pdf_document: default
+---
+__Badillo Martínez Juan Carlos__
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Código Previo
+
+```{r}
+library(ggplot2)
+library(quantmod)
+library(zoo)
+library(fPortfolio)
+library(lpSolve)
+library(tsbox)
+library(nloptr)
+library(pracma)
+library(latex2exp)
+
+datosInstrumento<-function(simbolo){
+  
+  instrumento<-getSymbols(simbolo, src='yahoo', auto.assign=FALSE)
+  
+  #seriePrecios<-instrumento[,paste(simbolo, '.Adjusted', sep='')]
+  
+  #seriePrecios<-seriePrecios['2019-01-01/2020-12-31']
+  
+  #promedio<-mean(seriePrecios)
+  
+  #maximo<-max(seriePrecios)
+  
+  #minimo<-min(seriePrecios)
+  
+  #rendimiento<-(as.numeric(seriePrecios[length(seriePrecios)])/as.numeric(seriePrecios[1]) -1)*100
+  
+  #cat('\n\n\n\nEl precio promedio de', simbolo,'en el periodo fue de:', promedio,'\ncon un valor mínimo de:', minimo,       '\nun valor máximo de:', maximo, '\ny un rendimiento en el periodo de:', rendimiento,'%')
+  
+  #chartSeries(instrumento, subset='2019-01-01::2020-12-31',  theme=chartTheme('white'))
+  return(instrumento)  
+}
+
+listaprecios<-function(listavalores){
+  precios<-data.frame(Date=character())
+  
+  for (i in 1:length(listavalores)){
+    valor<-datosInstrumento(listavalores[i])[,6] ###Pprecios ajustados
+    
+    if (i==1){
+      precios<-valor
+      names(precios)<-c(listavalores[1])
+    }
+    else{
+      precios<-merge(precios, valor, join='inner')
+      names(precios)<-c(listavalores[1:i])
+    }
+  }
+  return(precios)
+}
+
+rendimientosprecios<-function(precios){
+  rendimientos<-data.frame(Date=character()) ###DataFrame vacío
+  
+  for (i in 1:ncol(precios)){
+    if (i==1){
+      rendimientos<-precios[,i]/lag(precios[,i], k=1) -1
+      
+    }
+    else{
+      rendimientos<-cbind(rendimientos, precios[,i]/lag(precios[,i], k=1) -1)
+      
+    }
+  }
+  longitud=length(rendimientos[,1])
+  return(rendimientos[c(2:longitud), ])
+}
+
+pesosSimulacion<-function(rendimientos, tamanio){
+  pesos<-data.frame(Date=character()) ###DataFrame vacío
+  
+  for (i in 1:ncol(precios)){
+    if (i==1){
+      pesos<-as.data.frame(runif(tamanio))
+      names(pesos)<-c(names(precios)[1])
+    }
+    else if(i<ncol(precios)){
+      columnapesos<-as.data.frame(rowSums(pesos))
+      pesos[,names(precios)[i]]<-apply(columnapesos, 1,completaAleatorios)
+      
+    }
+    else{
+      pesos[,names(precios)[i]]<-1-rowSums(pesos)
+    }
+  }
+  
+  return(pesos)
+}
+
+pesosSimulacionvtascorto<-function(rendimientos, tamanio){
+  pesos<-data.frame(Date=character()) ###DataFrame vacío
+  
+  for (i in 1:ncol(precios)){
+    if (i==1){
+      pesos<-as.data.frame(runif(tamanio,min=-3, max=3))
+      names(pesos)<-c(names(precios)[1])
+    }
+    else if(i<ncol(precios)){
+      
+      pesos[,names(precios)[i]]<-as.data.frame(runif(tamanio,min=-2, max=2))
+      
+    }
+    else{
+      pesos[,names(precios)[i]]<-1-rowSums(pesos)
+    }
+  }
+  
+  return(pesos)
+}
+
+completaAleatorios<-function(suma){
+  aleatorio<-runif(1,max=1-suma)
+  return(aleatorio)
+}
+
+rendimientosPesos<-function(vectorPesos, vectorRendimientos){
+  return(as.numeric(vectorPesos)%*%as.matrix(vectorRendimientos))
+}
+
+riesgoPortafolio<-function(vectorPesos, matrizSigma){
+  varianza=as.numeric(vectorPesos)%*%matrizSigma%*%as.matrix(vectorPesos)
+  return(varianza)
+}
+
+simulacionPortafolios<-function(rendimientos, tamanio, vectorRendimientos, matrizSigma){
+  pesos<-pesosSimulacion(rendimientos, tamanio)
+  rendimientoSimulaciones<-apply(pesos, MARGIN = 1, rendimientosPesos, vectorRendimientos=vectorRendimientos)
+  riesgoSimulaciones<-apply(pesos,MARGIN=1,riesgoPortafolio, matrizSigma=matrizSigma)
+  
+  pesos['$E[r_P]$']=rendimientoSimulaciones
+  pesos['$¬sigma¨2_P$']=riesgoSimulaciones
+  pesos['$¬sigma_P$']=sqrt(pesos['$¬sigma¨2_P$'])
+  return(pesos)
+}
+
+
+simulacionPortafoliosvtasCorto<-function(rendimientos, tamanio, vectorRendimientos, matrizSigma){
+  pesos<-pesosSimulacionvtascorto(rendimientos, tamanio)
+  rendimientoSimulaciones<-apply(pesos, MARGIN = 1, rendimientosPesos, vectorRendimientos=vectorRendimientos)
+  riesgoSimulaciones<-apply(pesos,MARGIN=1,riesgoPortafolio, matrizSigma=matrizSigma)
+  
+  pesos['$E[r_P]$']=rendimientoSimulaciones
+  pesos['$¬sigma¨2_P$']=riesgoSimulaciones
+  pesos['$¬sigma_P$']=sqrt(pesos['$¬sigma¨2_P$'])
+  return(pesos)
+}
+
+MVP<-function(matrizSigma, vectorRendimientos){
+  tamanio<-length(vectorRendimientos)
+  unos<-rep(1, tamanio)
+  matrizAumentada<-rbind(matrizSigma, unos)
+  unos<-c(unos,0)
+  matrizAumentada<-cbind(matrizAumentada, unos)
+  portMVP<-solve(matrizAumentada, c(rep(0,tamanio),1))
+  return(portMVP[1:tamanio])
+}
+
+minVarRend<-function(rend, matrizSigma, vectorRendimientos){
+  tamanio<-length(vectorRendimientos)
+  unos<-rep(1, tamanio)
+  matrizAumentada<-rbind(matrizSigma, unos)
+  unos<-c(unos,0)
+  matrizAumentada<-cbind(matrizAumentada, unos)
+  esperanzas<-c(vectorRendimientos,0)
+  matrizAumentada<-cbind(matrizAumentada, esperanzas)
+  esperanzas<-c(esperanzas,0)
+  matrizAumentada<-rbind(matrizAumentada, esperanzas)
+  resultado<-c(rep(0,tamanio),1,rend)
+  pesosRend<-solve(matrizAumentada, resultado)[0:tamanio]
+  return(pesosRend)
+}
+
+```
+
+Debido a que el código visto en clase era solo para grupos de 2 o 3 activos se tuvo que programar código que realiza las mismas funciones, utilizando notación matricial, las funciones programadas son las siguientes:
+
+
+*listaprecios: Descarga los precios históricos de los activos que conformarán el portafolio usando quantmod
+
+*rendimientosprecios: Calcula los rendimietos correspondientes a lso precios descargados
+
+*pesosSimulacion: Devuelve un dataframe con pesos aleatorios para n portafolios de activos, sin ventas en corto
+
+*pesosSimulacionvtascorto: Devuelve un dataframe con pesos aleatorios para n portafolios de activos, permite ventas en corto
+
+*completaAleatorios: Función auxiliar para pesosSimulacion que dado un valor regresa un número aleatorio entre dicho valor y 1
+
+*rendimientosPesos: Dado un vector de pesos que define un portafolio y el vector de rendimientos individuales devuelve el rendimiento correspondiente al portafolio
+
+*riesgoPortafolio: Devuelve la varianza de un portafolio, dado el vector de pesos que lo define y la matriz de varianza y covarianza de los activos individuales
+
+*simulacionPortafolios: Devuelve un dataframe con los pesos de portafolios aleatorios, el rendimiento y el riesgo asociados a dichos portafolios, sin ventas en corto
+
+*simulacionPortafoliosvtasCorto: Devuelve un dataframe con los pesos de portafolios aleatorios, el rendimiento y el riesgo asociados a dichos portafolios, permite ventas en corto
+
+*MVP: Devuelve el portafolio de minima varianza absoluta dada la matriz ce covarianzas de los activos individuales
+
+*minVarRend: Devuelve los pesos correspondientes al portafolio de mínima varianza, dado un rendimiento, permite ventas en corto
+
+*minVarianza: Devuelve los pesos correspondientes al portafolio de mínima varianza, dado un rendimiento, sin ventas en corto.
+
+## Frontera Eficiente de un portafolio de inversión
+
+Al tener un conjunto de activos para conformar un portafolio de inversión, surge la pregunta de que proporción del portafolio asignar a cada activo, en el caso de el siguiente conjunto de activos existen una infinidad de portafolios posibles cada uno con un nivel de riesgo y rendimiento asociado:
+
+```{r}
+library(knitr)
+library(kableExtra)
+
+nombres<-function(simbolo){
+  if (simbolo=='VOO'){
+    return('Vangard S&P500 ETF')
+  }
+  else if (simbolo=='AMZN'){
+    return('Amazon')
+  }else if (simbolo=='MSFT'){
+    return('Microsoft')
+  }else if (simbolo=='INTC'){
+    return('Intel')
+  }else if (simbolo=='PFE'){
+    return('Pfizer')
+  }else if (simbolo=='AZN'){
+    return('Astra Zeneca')
+  }else if (simbolo=='AAL'){
+    return('American Airlines')
+  }else if (simbolo=='BLOK'){
+    return('Blockchain ETF')
+  }else if (simbolo=='MET'){
+    return('MetLife')
+  }else if (simbolo=='C'){
+    return('CitiGroup')
+  }
+}
+
+listavalores<-c('VOO', 'MSFT', 'AMZN', 'INTC', 'PFE', 'AZN','AAL','BLOK', 'MET','C')
+
+tablaValores<-as.data.frame(listavalores)
+names(tablaValores)<-c('Simbolo')
+
+tablaValores[,'Compañía']<-apply(tablaValores,MARGIN = 1, nombres)
+
+kable(tablaValores)
+```
+Al simular la distribución del peso de los activos dentro del espacio $(\sigma_P,E[r_P])$ estos forman una figura definida, para el caso de no tener una restricción de ventas en corto, la figura es la siguiente:
+
+```{r}
+listavalores<-c('VOO', 'MSFT', 'AMZN', 'INTC', 'PFE', 'AZN','AAL','BLOK', 'MET','C')
+
+precios<-listaprecios(listavalores)
+
+rendimientosPortafolio<-rendimientosprecios(precios)
+
+vectRendimientos<-colMeans(rendimientosPortafolio)
+
+matrizSigma<-cov(rendimientosPortafolio)
+
+simulacionvtascorto<-simulacionPortafoliosvtasCorto(rendimientosPortafolio, 1000000, vectRendimientos, matrizSigma)
+
+graficaSimulacionvtascorto<-ggplot()+geom_point(aes(x=simulacionvtascorto$`$¬sigma_P$`, y=simulacionvtascorto$`$E[r_P]$`))+ggtitle('Espacio de Simulaciones con ventas en corto')+xlab(TeX('$\\sigma_P$'))+ylab(TeX('$E(r_P)$'))
+
+graficaSimulacionvtascorto
+```
+
+```{r}
+simulacion<-simulacionPortafolios(rendimientosPortafolio, 1000000, vectRendimientos, matrizSigma)
+
+graficaSimulacion<-ggplot()+geom_point(aes(x=simulacion$`$¬sigma_P$`, y=simulacion$`$E[r_P]$`))+ggtitle('Espacio de Simulaciones sin ventas en corto')+xlab(TeX('$\\sigma_P$'))+ylab(TeX('$E(r_P)$'))
+
+graficaSimulacion
+```
+
+Al colocar los puntos correspondientes a los activos individuales en el espacio $(\sigma_P,E[r_P])$ se observa lo siguiente:
+
+```{r}
+simulacionconActivos<-graficaSimulacion+geom_point(aes(y=c(vectRendimientos), x=sqrt(c(diag(matrizSigma))), colour='Activos Individuales'))
+simulacionconActivosnovtascorto<-graficaSimulacionvtascorto+geom_point(aes(y=c(vectRendimientos), x=sqrt(c(diag(matrizSigma))), colour='Activos Individuales'))
+
+simulacionconActivos
+simulacionconActivosnovtascorto
+```
+
+
+Los activos indivuduales en el espacio $(\sigma_P, E[r_P])$ muestran que de los 10 activos tres pueden retirarse del portafolio pues al esta rdentro de la zonade factibilidad pueden ser representados como combinaciones lineales del resto de los activos
+
+El problema de portafolio óptimo puede definirse como minimizar el riesgo medido como la varianza del portafolio en notación de un problema de optimización es el siguiente:
+
+La función objetivo  \eqref{objetivo} en esta notación se reescribe de las iguiente manera:  
+$$
+\begin{align}
+    Minimizar \; \sigma^2_P=w^T\Sigma w
+\end{align}
+$$
+Sujeto a dos restricciones:
+
+$$
+\begin{align}
+    w^TE&=E[r_P] \\ 
+    w^T\bar{1}&=1
+\end{align}
+$$
+
+Donde: \\ 
+
+$w^T=(w_1,w_2, ..., w_n)$ es el vector de pesos de los activos, la T indica que es un vector transpuesto. \\ 
+$E$ es el vector columna con los rendimientos esperados de los activos.\\
+$\bar{1}$ es un vector de unos con tantas entradas como activos pertenecen al portafolios.
+
+$\Sigma$ es la matriz de varianzas y covarianzas. 
+
+Existe un portafolio que corresponde a la mínima varianza absoluta del espacio de portafolios posibles, este es el portafolio de mínima varianza absoluto este equivale a retirar la primera de las dos restricciones
+
+```{r}
+pesosMVP<-MVP(matrizSigma, vectRendimientos)
+
+rendminvar<-rendimientosPesos(pesosMVP, vectRendimientos)
+
+minvar<-riesgoPortafolio(pesosMVP,matrizSigma)
+
+simulacionconActivosMVP<-simulacionconActivos+geom_point(aes(y=rendminvar, x=sqrt(minvar), colour='MVP'))
+simulacionconActivosnovtascortoMVP<-simulacionconActivosnovtascorto+geom_point(aes(y=rendminvar, x=sqrt(minvar), colour='MVP'))
+
+simulacionconActivosMVP
+simulacionconActivosnovtascortoMVP
+
+```
+Al resolver el problema de optimización completo para un conjunto de posibles valores de $E[r_P]$ se obtiene la llamada frontera eficiente que minimiza el riesgo para cada valor de $E[r_P]$
+```{r}
+puntosfronterairrestricta<-linspace(rendminvar, max(simulacion$`$E[r_P]$`))
+
+tablafronterairrestricta<-as.data.frame(puntosfronterairrestricta)
+names(tablafronterairrestricta)<-c('rendimiento')
+pesosirrestrictos<-as.data.frame(t(apply(tablafronterairrestricta, MARGIN = 1, minVarRend, matrizSigma=matrizSigma, vectorRendimientos=vectRendimientos)))
+tablafronterairrestricta<-cbind(tablafronterairrestricta, pesosirrestrictos)
+tablafronterairrestricta[,'riesgo']<-apply(pesosirrestrictos, MARGIN = 1,riesgoPortafolio, matrizSigma=matrizSigma)
+```
+
+```{r}
+simulacionfrontera<-simulacionconActivosMVP+geom_line(aes(x=sqrt(tablafronterairrestricta$riesgo), y=tablafronterairrestricta$rendimiento, colour='frontera eficiente irrestricta'))
+simulacionfronteranoventascorto<-simulacionconActivosnovtascortoMVP+geom_line(aes(x=sqrt(tablafronterairrestricta$riesgo), y=tablafronterairrestricta$rendimiento, colour='frontera eficiente irrestricta'))
+
+simulacionfrontera
+simulacionfronteranoventascorto
+```
+
+Las soluciones al problema de portafolios eficientes pueden contener valores negativos en los pesos, dichas soluciones no siempre son realistas, Existen fondos de inversión que tienen prohibidas las ventas en corto como SIEFORES, aseguradoras y fondos privados de pensiones, por otro lado existen instituciones que dentro de su regulación están sujetos a un régimen de inversión que haría inviables algunas soluciones al problema.
+
+Para el primer caso se pueden utilizar métodos numéricos que simplifican el proceso de fijar restricciones sobre no tener ventas en corto
+
+```{r}
+
+tamanio<-length(vectRendimientos)
+restricciones<-rbind(c(rep(1,tamanio)), vectRendimientos)
+minVarianza<-function(matrizSigma, rendObj, minimos=rep(0,tamanio), maximos=rep(1,tamanio)){
+  valorRestriccion<-c(1,rendObj)
+  funcionRestriccion<-function(x){
+    return(restricciones%*%x-valorRestriccion)
+  }
+  w<-slsqp(rep(0,tamanio), fn=riesgoPortafolio, lower=minimos, upper=maximos, heq = funcionRestriccion,matrizSigma=matrizSigma)
+  return(w$par)
+}
+
+tablafronterarestringida<-as.data.frame(puntosfronterairrestricta)
+names(tablafronterarestringida)<-c('rendimiento')
+
+pesosNonegativos<-t(apply(tablafronterarestringida, MARGIN = 1, minVarianza, matrizSigma=matrizSigma))
+
+tablafronterarestringida<-cbind(tablafronterarestringida, pesosNonegativos)
+tablafronterarestringida[,'riesgo']<-apply(pesosNonegativos, MARGIN = 1,riesgoPortafolio, matrizSigma=matrizSigma)
+
+```
+
+```{r}
+simulacionambasfront<-simulacionfrontera+geom_point(aes(x=sqrt(tablafronterarestringida$riesgo), y=tablafronterarestringida$rendimiento, colour='frontera eficiente sin ventas en corto'))
+simulacionambasfrontnovtas<-simulacionfronteranoventascorto+geom_point(aes(x=sqrt(tablafronterarestringida$riesgo), y=tablafronterarestringida$rendimiento, colour='frontera eficiente sin ventas en corto'))
+
+simulacionambasfront
+simulacionambasfrontnovtas
+```
+También es posible restringir las soluciones a un régimen de inversión, a manera de ejemplo se utilizarán las siguientes restricciones:
+
+
+BLOK max 50%
+VOO max 60%
+
+El resto irrestricto
+
+```{r}
+
+tablaregimenInv<-as.data.frame(puntosfronterairrestricta)
+names(tablaregimenInv)<-c('rendimiento')
+
+####Definimos el regimen de inversión como 2 vectores, uno de minimos y uno de máximos
+
+minimosreg=c(0,0,0,0,0,0,0,0,0,0)
+maximosreg=c(0.8,0,0,0,0,0,0,0.5,0,0)
+
+pesosNonegativos<-t(apply(tablaregimenInv, MARGIN = 1, minVarianza, matrizSigma=matrizSigma, minimos=minimosreg, maximos=maximosreg))
+
+tablaregimenInv<-cbind(tablaregimenInv, pesosNonegativos)
+tablaregimenInv[,'riesgo']<-apply(pesosNonegativos, MARGIN = 1,riesgoPortafolio, matrizSigma=matrizSigma)
+
+
+
+```
+
+Las soluciones al problema de portafolios eficientes pueden contener valores negativos en los pesos, dichas soluciones no siempre son realistas, Existen fondos de inversión que tienen prohibidas las ventas en corto como SIEFORES, aseguradoras y fondos privados de pensiones, por otro lado existen instituciones que dentro de su regulación están sujetos a un régimen de inversión que haría inviables algunas soluciones al problema.
+
+Para el primer caso se pueden utilizar métodos numéricos que simplifican el proceso de fijar restricciones sobre no tener ventas en corto
+
